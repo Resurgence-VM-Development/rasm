@@ -13,4 +13,5 @@ How to run (as of January 2023):
 * Step 2 (needed now until Resurgence enters its first alpha). `git clone https://github.com/Resurgence-VM-Development/Resurgence`
 	* Step 2.5. If the most recent commit doesn't build, reset Resurgence to the last commit that does (in the commit history, it should have a green checkmark, a red X means it didn't build) using `git reset --hard <commit-that-builds>`. 
 * Step 3. Edit this line in `Cargo.toml`: `resurgence = { path = "path/to/Resurgence" }`
+
 And that's it! You can start coding afterwards or build Resurgence
