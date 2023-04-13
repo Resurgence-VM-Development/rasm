@@ -2,9 +2,9 @@
 /// eventually ported to Rust after the codegen API was finished
 ///
 /// Began being written by StandingPad on January 1st 2023 while braindead from 5 hours of sleep
-use std::{env, fs::File, io::{self, BufRead}};
+use std::{env::{self, current_exe}, fs::File, io::{self, BufRead}};
 use logos::Logos;
-use resurgence::{CodeHolder, codegen};
+use resurgence::{CodeHolder, codegen as cg};
 
 #[derive(Logos, Debug, PartialEq)]
 enum Token {
@@ -50,9 +50,6 @@ enum Token {
 
     #[regex("[_a-zA-Z][_0-9a-zA-Z]*")]
     Identifier,
-
-    #[error]
-    Error,
 }
 
 enum CurrentSection {
@@ -76,7 +73,7 @@ fn lex(file: &File) -> Vec<(Token, String)> {
             loop {
                 let token = line_tok.next(); let value = line_tok.slice();
                 if token.is_some() {
-                    tokens.push((token.unwrap(), value.to_string()));
+                    tokens.push((token.unwrap().unwrap(), value.to_string()));
                 } else {
                     break;
                 }
@@ -97,8 +94,8 @@ macro_rules! next_set {
 }
 fn parse(tokens: Vec<(Token, String)>) -> CodeHolder {
     let mut code_holder = CodeHolder::new();
-    let mut itr = tokens.iter();
     let mut current_section = CurrentSection::Constants;
+    let mut itr = tokens.iter();
     loop {
         let mut next_elem = itr.next();
         // We have to break out eventually
@@ -108,36 +105,29 @@ fn parse(tokens: Vec<(Token, String)>) -> CodeHolder {
         let mut pair = next_elem.unwrap();
         match pair.0 {
             Token::Section => {
-                next_set!(itr, next_elem, pair);
-                if let Token::SectionLoc = pair.0 {
-                    current_section = match pair.1.as_str() {
-                        "constants" => CurrentSection::Constants,
-                        "alisases" => CurrentSection::Aliases,
-                        "imports" => CurrentSection::Imports,
-                        "exports" => CurrentSection::Exports,
-                        "code" => CurrentSection::Code,
-                        _ => panic!("Section name \"{}\" is invalid!", pair.1),
-                    };
-                    // Let's compile the Constants section to make our life
-                    // easier
-                    if let CurrentSection::Constants = current_section {
-                        loop {
+                current_section = match pair.1.as_str() {
+                    "constants" => CurrentSection::Constants,
+                    "aliases" => CurrentSection::Aliases,
+                    "imports" => CurrentSection::Imports,
+                    "code" => CurrentSection::Code,
+                    "exports" => CurrentSection::Exports,
+                    _ => panic!("Invalid Section!")
+                };
+            }
+            Token::Int => {
+                match current_section {
+                    CurrentSection::Constants => {
+                        next_set!(itr, next_elem, pair);
+                        if let Token::Arrow = pair.0 {
                             next_set!(itr, next_elem, pair);
-                            if let Token::Int = pair.0 {
-                                next_set!(itr, next_elem, pair);
-                                if let Token::Arrow = pair.0 {
-                                    next_set!(itr, next_elem, pair);
-                                    match pair.0 {
-                                        _ => panic!("Expected constant, got {:?}", pair.0),
-                                    }
-                                }
-                            } else {
-                                panic!("Expected Int, got {:?}", pair.0);
+                            match pair.0 {
+                                Token::Int => drop(cg::generate_int_constant(&mut code_holder, pair.1.parse().unwrap())),
+                                _ => panic!("Expected constant, got {:?}", pair.0),
                             }
+                        } else {
+                            panic!("Expected =>, got {:?}", pair.0);
                         }
                     }
-                } else {
-                    panic!("Expected Section Location, got {:?}", pair.0);
                 }
             }
             _ => panic!("Invalid Syntax!"),
