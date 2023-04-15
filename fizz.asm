@@ -4,14 +4,15 @@
 #
 # Compile this using the "rasm" program included in the Resurgence SDK.
 
-section constants
-    0 => 1
-    1 => 1000000
-    2 => 0
-    3 => "Fizz"
-    4 => "Buzz"
-    5 => 3
-    6 => 5
+section constants [
+    1,
+    1000000,
+    0,
+    "Fizz",
+    "Buzz",
+    3,
+    5,
+]
     
 
 section aliases

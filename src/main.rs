@@ -2,22 +2,31 @@
 /// eventually ported to Rust after the codegen API was finished
 ///
 /// Began being written by StandingPad on January 1st 2023 while braindead from 5 hours of sleep
-use std::{env::{self, current_exe}, fs::File, io::{self, BufRead}};
+use std::{fs, env, fmt};
 use logos::Logos;
-use resurgence::{CodeHolder, codegen as cg};
+use ariadne::{Color, Label, Report, ReportKind, Source};
+use chumsky::{
+    input::{Stream, ValueInput},
+    prelude::*, combinator::To,
+};
 
-#[derive(Logos, Debug, PartialEq)]
-enum Token {
-    #[regex(r"#[^\n]*", logos::skip)]
-    #[regex(r"[ \t\n\f]+", logos::skip)]
-
+#[derive(Logos, Clone, PartialEq)]
+enum Token<'a> {
     #[token("section")]
     Section,
-    #[regex("constants|imports|exports|aliases|code")]
-    SectionLoc,
-    
+    #[regex("constants")]
+    Constants,
+    #[regex("imports")]
+    Imports,
+    #[regex("exports")]
+    Exports,
+    #[regex("aliases")]
+    Aliases,
+    #[regex("code")]
+    Code,
+
     #[regex("const|global|local")]
-    RegLoc,
+    RegLoc(&'a str),
     #[token("alias")]
     Alias,
     #[token("=>")]
@@ -38,118 +47,169 @@ enum Token {
     Comma,
 
     #[regex("[0-9][_0-9]*")]
-    Int,
+    Int(&'a str),
     #[regex("\"[.a-zA-Z][_0-9a-zA-Z]*\"")]
-    String,
+    String(&'a str),
 
     #[regex("true|false")]
-    Bool,
+    Bool(&'a str),
     
     #[regex("(?i)alloc|free|frame_alloc|frame_free|jump|call|ext_call|ret|mov|cpy|ref|stack_push|stack_mov|stack_pop|add|sub|mul|div|mod|equal|not_equal|greater|less|greater_equal|less_equal")]
-    Instruction,
+    Instruction(&'a str),
 
     #[regex("[_a-zA-Z][_0-9a-zA-Z]*")]
-    Identifier,
-}
+    Identifier(&'a str),
 
-enum CurrentSection {
-    Constants,
-    Aliases,
-    Imports,
-    Exports,
-    Code,
-}
-
-/// Creates tokens from the file itself
-fn lex(file: &File) -> Vec<(Token, String)> {
-    let mut tokens: Vec<(Token, String)> = Vec::new();
-    let file_buffer = io::BufReader::new(file).lines();
+    #[regex(r"[ \t\f\n]+", logos::skip)]
+    Whitespace,
+    #[regex(r"#[^\n]*", logos::skip)]
+    Comment,
     
-    // Iterate over each line in the buffer
-    for file_line in file_buffer {
-        // If the line is valid
-        if let Ok(line) = file_line {
-            let mut line_tok = Token::lexer(&line);
-            loop {
-                let token = line_tok.next(); let value = line_tok.slice();
-                if token.is_some() {
-                    tokens.push((token.unwrap().unwrap(), value.to_string()));
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-    tokens
+    #[error]
+    Error
 }
 
-/*
-Code related to parsing and generating code
-*/
-macro_rules! next_set {
-    ($itr:ident, $next_elem:ident, $pair:ident) => {
-        $next_elem = $itr.next();
-        $pair = $next_elem.unwrap();
-    };
-}
-fn parse(tokens: Vec<(Token, String)>) -> CodeHolder {
-    let mut code_holder = CodeHolder::new();
-    let mut current_section = CurrentSection::Constants;
-    let mut itr = tokens.iter();
-    loop {
-        let mut next_elem = itr.next();
-        // We have to break out eventually
-        if let Option::None = next_elem {
-            break;
-        }
-        let mut pair = next_elem.unwrap();
-        match pair.0 {
-            Token::Section => {
-                current_section = match pair.1.as_str() {
-                    "constants" => CurrentSection::Constants,
-                    "aliases" => CurrentSection::Aliases,
-                    "imports" => CurrentSection::Imports,
-                    "code" => CurrentSection::Code,
-                    "exports" => CurrentSection::Exports,
-                    _ => panic!("Invalid Section!")
-                };
-            }
-            Token::Int => {
-                match current_section {
-                    CurrentSection::Constants => {
-                        next_set!(itr, next_elem, pair);
-                        if let Token::Arrow = pair.0 {
-                            next_set!(itr, next_elem, pair);
-                            match pair.0 {
-                                Token::Int => drop(cg::generate_int_constant(&mut code_holder, pair.1.parse().unwrap())),
-                                _ => panic!("Expected constant, got {:?}", pair.0),
-                            }
-                        } else {
-                            panic!("Expected =>, got {:?}", pair.0);
-                        }
-                    }
-                }
-            }
-            _ => panic!("Invalid Syntax!"),
+
+impl<'a> fmt::Display for Token<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Token::Section           => write!(f, "section"),
+            Token::Constants         => write!(f, "constants"),
+            Token::Imports           => write!(f, "imports"),
+            Token::Exports           => write!(f, "exports"),
+            Token::Aliases           => write!(f, "aliases"),
+            Token::Code              => write!(f, "code"),
+            Token::RegLoc(s)         => write!(f, "{}", s),
+            Token::Alias             => write!(f, "alias"),
+            Token::Arrow             => write!(f, "=>"),
+            Token::Minus             => write!(f, "-"),
+            Token::LParen            => write!(f, "("),
+            Token::RParen            => write!(f, ")"),
+            Token::LBrac             => write!(f, "["),
+            Token::RBrac             => write!(f, "]"),
+            Token::Period            => write!(f, "."),
+            Token::Comma             => write!(f, ","),
+            Token::Int(s)            => write!(f, "number {}", s),
+            Token::String(s)         => write!(f, "string {}", s),
+            Token::Bool(s)           => write!(f, "bool {}", s),
+            Token::Instruction(s)    => write!(f, "instruction {}", s),
+            Token::Identifier(s)     => write!(f, "identifier {}", s),
+            Token::Whitespace        => write!(f, "<whitespace>"),
+            Token::Comment           => write!(f, "<comment>"),
+            Token::Error             => write!(f, "<error>"),
         }
     }
-    code_holder
 }
+
+enum RegLoc {
+    CONST,
+    GLOBAL,
+    LOCAL,
+}
+
+enum Expr {
+    Int(i64),
+    String(String),
+    Bool(bool),
+    
+    Register((RegLoc, u32)),
+    Assignment(String, Box<Self>),
+
+
+    ConstSection(Vec<Self>),
+    AliasesSection(Vec<Self>),
+}
+
+fn parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
+) -> impl Parser<'a, I,Expr, extra::Err<Rich<'a, Token<'a>>>> {
+    // Parse identifiers
+    let ident = select! { Token::Identifier(s) => s.to_string() };
+    
+    // Parse u32 integers
+    let u32_literal = select! { Token::Int(s) => s.parse().unwrap() };
+
+    // Parse literals in the constant pool
+    let const_literal = select!{
+        Token::Int(s) => Expr::Int(s.parse().unwrap()),
+        Token::String(s) => Expr::String(s.to_string()),
+        Token::Bool(s) => Expr::Bool(s.parse().unwrap()),
+    };
+    
+    // Parse register locations
+    let reg_loc = select! {
+        Token::RegLoc(s) if s == "const" => RegLoc::CONST,
+        Token::RegLoc(s) if s == "global" => RegLoc::GLOBAL,
+        Token::RegLoc(s) if s == "local" => RegLoc::LOCAL 
+    };
+    
+    // Parse the constants section
+    let constant_array = just(Token::Section)
+        .then(just(Token::Constants))
+        .ignore_then(const_literal
+            .then_ignore(just(Token::Comma))
+            .repeated()
+            .collect()
+            .map(Expr::ConstSection)
+            .delimited_by(just(Token::LBrac), just(Token::RBrac)
+            )
+        );
+    
+    // Parse the aliases section
+    let alias_section = just(Token::Section)
+        .then(just(Token::Aliases))
+        .ignore_then(
+            ident
+            .then(just(Token::Arrow)
+                .ignore_then(reg_loc)
+                .then_ignore(just(Token::LBrac))
+                .then(u32_literal)
+                .then_ignore(just(Token::RBrac))
+                .map(Expr::Register)
+            )
+            .map(|(name, reg_obj)| Expr::Assignment(name, Box::new(reg_obj)))
+            .repeated()
+            .collect()
+            .map(Expr::AliasesSection)
+        );
+        
+    constant_array
+        .or(alias_section)
+}
+
 
 fn main() {
-    if let Some(file_path) = env::args().nth(1) {
-        let file = match File::open(file_path) {
-            Ok(f) => f,
-            Err(e) => panic!("File failed to open! {}", e),
-        };
+    let src = fs::read_to_string(env::args().nth(1).expect("Expected file argument"))
+        .expect("Failed to read file");
+    let src = src.as_str();
+    let token_iter = Token::lexer(src)
+        .spanned()
+        // Map the `Range<usize>` logos gives us into chumsky's `SimpleSpan`, because it's easier to work with
+        .map(|(tok, span)| {
+            (tok, span.into())
+        });
 
-        let tokens = lex(&file);
+    // Turn the token iterator into a stream that chumsky can use for things like backtracking
+    let token_stream = Stream::from_iter(token_iter)
+        // Tell chumsky to split the (Token, SimpleSpan) stream into its parts so that it can handle the spans for us
+        // This involves giving chumsky an 'end of input' span: we just use a zero-width span at the end of the string
+        .spanned((src.len()..src.len()).into());
 
-        for tok in tokens {
-            println!("{} | {:?}", tok.1, tok.0);
-        }
-
-    } else {
-        panic!("Must provide a file to compile!");
-    }
+    // Parse the token stream with our chumsky parser
+    match parser().parse(token_stream).into_result() {
+        // If parsing was successful, attempt to evaluate the expression
+        Ok(_) => return,
+        Err(errs) => errs.into_iter().for_each(|e| {
+            Report::build(ReportKind::Error, (), e.span().start)
+                .with_code(3)
+                .with_message(e.to_string())
+                .with_label(
+                    Label::new(e.span().into_range())
+                        .with_message(e.reason().to_string())
+                        .with_color(Color::Red),
+                )
+                .finish()
+                .eprint(Source::from(src))
+                .unwrap()
+        }),
+    };
 }
