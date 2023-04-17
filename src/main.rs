@@ -117,9 +117,10 @@ enum Expr {
     Register((RegLoc, u32)),
     Assignment(String, Box<Self>),
 
-
     ConstSection(Vec<Self>),
     AliasesSection(Vec<Self>),
+    ImportsSection(Vec<String>),
+    ExportsSection(Vec<String>)
 }
 
 fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
@@ -169,10 +170,29 @@ fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
             .map(Expr::AliasesSection)
         );
     
+    let imports_section = just(Token::Imports)
+        .ignore_then(
+            ident
+            .repeated()
+            .collect()
+            .map(Expr::ImportsSection)
+        );
+
+    let exports_section = just(Token::Exports)
+    .ignore_then(
+        ident
+        .repeated()
+        .collect()
+        .map(Expr::ExportsSection)
+    );
+
+
     let section = just(Token::Section)
         .ignore_then(choice((
             constant_array, 
-            alias_section
+            alias_section,
+            imports_section,
+            exports_section
         )));
 
     section
