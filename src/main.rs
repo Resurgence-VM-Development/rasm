@@ -7,7 +7,7 @@ use logos::Logos;
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{
     input::{Stream, ValueInput},
-    prelude::*, combinator::To,
+    prelude::*
 };
 
 #[derive(Logos, Clone, PartialEq)]
@@ -101,12 +101,14 @@ impl<'a> fmt::Display for Token<'a> {
     }
 }
 
+#[derive(Debug)]
 enum RegLoc {
     CONST,
     GLOBAL,
     LOCAL,
 }
 
+#[derive(Debug)]
 enum Expr {
     Int(i64),
     String(String),
@@ -120,7 +122,7 @@ enum Expr {
     AliasesSection(Vec<Self>),
 }
 
-fn parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
+fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
 ) -> impl Parser<'a, I,Expr, extra::Err<Rich<'a, Token<'a>>>> {
     // Parse identifiers
     let ident = select! { Token::Identifier(s) => s.to_string() };
@@ -143,8 +145,7 @@ fn parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
     };
     
     // Parse the constants section
-    let constant_array = just(Token::Section)
-        .then(just(Token::Constants))
+    let constant_array = just(Token::Constants)
         .ignore_then(const_literal
             .then_ignore(just(Token::Comma))
             .repeated()
@@ -155,15 +156,11 @@ fn parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
         );
     
     // Parse the aliases section
-    let alias_section = just(Token::Section)
-        .then(just(Token::Aliases))
+    let alias_section = just(Token::Aliases)
         .ignore_then(
             ident
             .then(just(Token::Arrow)
-                .ignore_then(reg_loc)
-                .then_ignore(just(Token::LBrac))
-                .then(u32_literal)
-                .then_ignore(just(Token::RBrac))
+                .ignore_then(group((reg_loc, u32_literal.delimited_by(just(Token::LBrac), just(Token::RBrac)))))
                 .map(Expr::Register)
             )
             .map(|(name, reg_obj)| Expr::Assignment(name, Box::new(reg_obj)))
@@ -171,9 +168,14 @@ fn parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
             .collect()
             .map(Expr::AliasesSection)
         );
-        
-    constant_array
-        .or(alias_section)
+    
+    let section = just(Token::Section)
+        .ignore_then(choice((
+            constant_array, 
+            alias_section
+        )));
+
+    section
 }
 
 
@@ -181,13 +183,18 @@ fn main() {
     let src = fs::read_to_string(env::args().nth(1).expect("Expected file argument"))
         .expect("Failed to read file");
     let src = src.as_str();
-    let token_iter = Token::lexer(src)
+    let tokens = Token::lexer(src);
+    let token_iter = tokens
+        .clone()
         .spanned()
         // Map the `Range<usize>` logos gives us into chumsky's `SimpleSpan`, because it's easier to work with
         .map(|(tok, span)| {
             (tok, span.into())
         });
-
+    
+    for tok in tokens {
+        println!("{}", tok);
+    }
     // Turn the token iterator into a stream that chumsky can use for things like backtracking
     let token_stream = Stream::from_iter(token_iter)
         // Tell chumsky to split the (Token, SimpleSpan) stream into its parts so that it can handle the spans for us
@@ -195,9 +202,14 @@ fn main() {
         .spanned((src.len()..src.len()).into());
 
     // Parse the token stream with our chumsky parser
-    match parser().parse(token_stream).into_result() {
+    //
+    // "But Mahid, why isn't repeated in the function itself?"
+    // Because Rust complains with errors worse than GCC.
+    //
+    // Don't touch, it works
+    match section_parser().repeated().then_ignore(end()).parse(token_stream).into_result() {
         // If parsing was successful, attempt to evaluate the expression
-        Ok(_) => return,
+        Ok(ast) => dbg!(ast),
         Err(errs) => errs.into_iter().for_each(|e| {
             Report::build(ReportKind::Error, (), e.span().start)
                 .with_code(3)
