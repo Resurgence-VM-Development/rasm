@@ -9,4 +9,4 @@ edition = "2021"
 ariadne = "0.2.0"
 chumsky = "1.0.0-alpha.3"
 logos = "0.12.1"
-resurgence = { path = "/home/mahid/Documents/Resurgence" }
+resurgence = { git = "https://github.com/Resurgence-VM-Development/Resurgence" }
