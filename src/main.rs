@@ -139,6 +139,7 @@ enum Expr {
     Instruction((String, Vec<Self>)),
     Label(String),
     
+    Program(Vec<Self>),
     ConstSection(Vec<Self>),
     AliasesSection(Vec<Self>),
     ImportsSection(Vec<String>),
@@ -146,7 +147,7 @@ enum Expr {
     CodeSection(Vec<Self>)
 }
 
-fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
+fn parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
 ) -> impl Parser<'a, I,Expr, extra::Err<Rich<'a, Token<'a>>>> {
     // We do not map these because the Expr node varient they map to differs depending 
     // on when they've been parsed and which section they're in.
@@ -249,7 +250,11 @@ fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
             imports_section,
             exports_section,
             code_section
-        ))).map(|x|dbg!(x));
+    )))
+    .repeated()
+    .collect()
+    .map(Expr::Program);
+
 
     section
 }
@@ -280,9 +285,9 @@ fn main() {
     // Because Rust complains with errors worse than GCC.
     //
     // Don't touch, it works
-    match section_parser().repeated().then_ignore(end()).parse(token_stream).into_result() {
+    match parser().parse(token_stream).into_result() {
         // If parsing was successful, attempt to evaluate the expression
-        Ok(ast) => dbg!(ast),
+        Ok(ast) => { dbg!(ast); },
         Err(errs) => errs.into_iter().for_each(|e| {
             Report::build(ReportKind::Error, (), e.span().start)
                 .with_code(3)
