@@ -45,6 +45,10 @@ enum Token<'a> {
     Period,
     #[token(",")]
     Comma,
+    #[token("$")]
+    Dollar,
+    #[token("*")]
+    Deref,
 
     #[regex("[0-9][_0-9]*")]
     Int(&'a str),
@@ -89,6 +93,8 @@ impl<'a> fmt::Display for Token<'a> {
             Token::RBrac             => write!(f, "]"),
             Token::Period            => write!(f, "."),
             Token::Comma             => write!(f, ","),
+            Token::Dollar            => write!(f, "$"),
+            Token::Deref             => write!(f, "*"),
             Token::Int(s)            => write!(f, "number {}", s),
             Token::String(s)         => write!(f, "string {}", s),
             Token::Bool(s)           => write!(f, "bool {}", s),
@@ -111,25 +117,45 @@ enum RegLoc {
 #[derive(Debug)]
 enum Expr {
     Int(i64),
+    
+    // Here because it's technically a type,
+    // but is only used in instructions
+    Uint32(u32),
+
+    // The rest of the usable types
     String(String),
     Bool(bool),
     
     Register((RegLoc, u32)),
     Assignment(String, Box<Self>),
+    
+    // Direct constants are stuff like $1, $"Hello World", and $true
+    //
+    // As of writing, they're not technically supported, but they're
+    // easy enough to parse so we'll handle them regardless
+    DirectConstant(Box<Self>),
+    Identifier(String),
 
+    Instruction((String, Vec<Self>)),
+    Label(String),
+    
     ConstSection(Vec<Self>),
     AliasesSection(Vec<Self>),
     ImportsSection(Vec<String>),
-    ExportsSection(Vec<String>)
+    ExportsSection(Vec<String>),
+    CodeSection(Vec<Self>)
 }
 
 fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
 ) -> impl Parser<'a, I,Expr, extra::Err<Rich<'a, Token<'a>>>> {
-    // Parse identifiers
+    // We do not map these because the Expr node varient they map to differs depending 
+    // on when they've been parsed and which section they're in.
+    //
+    // For example, an identifier is mapped to an Assignment node in the Aliases section,
+    // but not in the code section and instead is mapped to the Identifier node
     let ident = select! { Token::Identifier(s) => s.to_string() };
-    
-    // Parse u32 integers
     let u32_literal = select! { Token::Int(s) => s.parse().unwrap() };
+    let instruction = select! { Token::Instruction(s) => s.to_string() };
 
     // Parse literals in the constant pool
     let const_literal = select!{
@@ -145,6 +171,14 @@ fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
         Token::RegLoc(s) if s == "local" => RegLoc::LOCAL 
     };
     
+    // We map these here since they will always generate these Expr varients
+    let register = group((reg_loc, u32_literal.delimited_by(just(Token::LBrac), just(Token::RBrac)))).map(Expr::Register);
+    let direct_const = just(Token::Dollar).ignore_then(const_literal).map(|val| Expr::DirectConstant(Box::new(val)));
+    let label = just(Token::Period).ignore_then(ident).map(Expr::Label);
+    
+    /* 
+    * All the parsers that parse the different sections
+    */
     // Parse the constants section
     let constant_array = just(Token::Constants)
         .ignore_then(const_literal
@@ -161,8 +195,7 @@ fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
         .ignore_then(
             ident
             .then(just(Token::Arrow)
-                .ignore_then(group((reg_loc, u32_literal.delimited_by(just(Token::LBrac), just(Token::RBrac)))))
-                .map(Expr::Register)
+                .ignore_then(register.clone())
             )
             .map(|(name, reg_obj)| Expr::Assignment(name, Box::new(reg_obj)))
             .repeated()
@@ -185,15 +218,38 @@ fn section_parser<'a, I: ValueInput<'a, Token = Token<'a>, Span = SimpleSpan>>(
         .collect()
         .map(Expr::ExportsSection)
     );
+    
+    let code_section = just(Token::Code)
+        .ignore_then(choice((
+            // Parse an instruction
+            instruction
+                .then(choice((
+                    ident.map(Expr::Identifier),
+                    u32_literal.map(Expr::Uint32),
+                    register,
+                    direct_const
+                ))
+                .repeated()
+                .collect()
+                )
+                .map(Expr::Instruction),
 
+            // Or a label
+            label
+            ))
+            .repeated()
+            .collect()
+            .map(Expr::CodeSection)
+        );
 
     let section = just(Token::Section)
         .ignore_then(choice((
             constant_array, 
             alias_section,
             imports_section,
-            exports_section
-        )));
+            exports_section,
+            code_section
+        ))).map(|x|dbg!(x));
 
     section
 }
@@ -212,9 +268,6 @@ fn main() {
             (tok, span.into())
         });
     
-    for tok in tokens {
-        println!("{}", tok);
-    }
     // Turn the token iterator into a stream that chumsky can use for things like backtracking
     let token_stream = Stream::from_iter(token_iter)
         // Tell chumsky to split the (Token, SimpleSpan) stream into its parts so that it can handle the spans for us
